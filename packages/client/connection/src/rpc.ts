@@ -120,6 +120,16 @@ export type PeerAdmission =
   | { readonly peer: PeerScope }
   | { readonly rejection: 401 | 403 }
 
+/**
+ * Per-request admission resolver registered by a Host plugin. Resolvers run in
+ * registration order before the native browser/API admission; the first
+ * non-undefined result wins, and `undefined` falls through to the next one.
+ */
+export type ConnectionPeerResolver = (
+  request: ConnectionTrustRequest,
+  context: { readonly browser: boolean },
+) => PeerAdmission | undefined
+
 /** Socket admission claims API ownership until its carrier calls release, including failed upgrades. */
 export type ConnectionAdmission =
   | {
@@ -240,11 +250,26 @@ export interface HostConnectionHandle {
   admit(request: ConnectionTrustRequest): PeerAdmission
 
   /**
+   * Register a per-request admission resolver in the caller's fiber.
+   * Resolvers run in registration order before the native admission; the first
+   * non-undefined result wins. With no resolver registered, admission is
+   * exactly the native browser/API behavior.
+   * @param resolver - request-to-Peer resolution hook.
+   * @returns disposer removing this resolver.
+   */
+  registerPeerResolver(resolver: ConnectionPeerResolver): () => void
+
+  /**
    * Create an independent in-process Peer, disposed with the Context that read `ctx.connection`.
    * @param options - fixed principal and optional interaction participation (default `answer`).
    * @returns a new Peer distinct from every other Peer.
    */
-  createPeer(options: { readonly principal: Principal; readonly interactions?: 'answer' | 'none' }): PeerScope
+  createPeer(options: {
+    readonly principal: Principal
+    readonly interactions?: 'answer' | 'none'
+    /** Opt this non-owner Peer into answering forwarded waterfalls (default false). */
+    readonly answerWaterfalls?: boolean
+  }): PeerScope
 
   /**
    * Claim a physical socket for an API Peer; browser sockets share their owner Peer.

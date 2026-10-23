@@ -27,6 +27,7 @@ import type {
   ConnectionRpcFailure,
   ConnectionRpcHandler,
   ConnectionRpcResult,
+  ConnectionPeerResolver,
   ConnectionRequestRejection,
   ConnectionTrustRequest,
   HostConnectionHandle,
@@ -75,6 +76,7 @@ export class HostConnectionService extends Service implements HostConnectionHand
   private disposed = false
   private readonly interceptors = new Map<string, ConnectionRpcInterceptor>()
   private readonly fetchRoutes = new Map<string, RegisteredFetchRoute>()
+  private readonly peerResolvers: ConnectionPeerResolver[] = []
 
   readonly allowsRemoteAuthorities: boolean
 
@@ -125,19 +127,41 @@ export class HostConnectionService extends Service implements HostConnectionHand
     return 'rejection' in admission ? admission.rejection : undefined
   }
 
+  /**
+   * Register a per-request resolver in the caller's fiber. Resolvers run in
+   * registration order before native admission; the first non-undefined
+   * result wins, and no resolver registered restores native behavior.
+   */
+  registerPeerResolver(resolver: ConnectionPeerResolver): () => void {
+    this.peerResolvers.push(resolver)
+    return () => {
+      const index = this.peerResolvers.indexOf(resolver)
+      if (index !== -1) this.peerResolvers.splice(index, 1)
+    }
+  }
+
   /** Browser requests share an owner Peer; API HTTP does not depend on an attached socket. */
   admit(request: ConnectionTrustRequest): PeerAdmission {
     if (!this.isTrusted(request)) return { rejection: 403 }
     if (this.disposed) return { rejection: 401 }
     const secure = this.owner.get('webServer')?.protocol === 'https:'
-    if (this.browserAuth.isAuthenticated(request, secure)) return { peer: this.browserPeer }
+    const browser = this.browserAuth.isAuthenticated(request, secure)
+    for (const resolver of this.peerResolvers) {
+      const resolved = resolver(request, { browser })
+      if (resolved !== undefined) return resolved
+    }
+    if (browser) return { peer: this.browserPeer }
     const id = this.browserAuth.authenticateApi(request, secure)
     const record = id === undefined ? undefined : this.peers.get(id)
     return record === undefined ? { rejection: 401 } : { peer: record.peer }
   }
 
   /** Create one in-process Peer owned by the Context that read this service. */
-  createPeer(options: { readonly principal: Principal; readonly interactions?: ConnectionInteractions }): PeerScope {
+  createPeer(options: {
+    readonly principal: Principal
+    readonly interactions?: ConnectionInteractions
+    readonly answerWaterfalls?: boolean
+  }): PeerScope {
     return new Peer(this.ctx, options)
   }
 

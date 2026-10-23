@@ -33,6 +33,7 @@ const libc = process.platform === 'linux'
   ? ((process.report.getReport() as { header: { glibcVersionRuntime?: string } }).header.glibcVersionRuntime ? 'glibc' : 'musl')
   : undefined
 const headers = resolve(dirname(process.execPath), '../include/node')
+const cc = process.env.CC?.trim() || 'cc'
 let built = 0
 
 for (const name of readdirSync(join(root, 'packages')).sort()) {
@@ -58,7 +59,7 @@ for (const name of readdirSync(join(root, 'packages')).sort()) {
       if (!existsSync(join(headers, 'node_api.h'))) {
         throw new Error(`build: Node-API headers missing at ${headers}; use a Node installation with development headers`)
       }
-      compiler = process.platform === 'linux' && binary.libc === 'musl' ? 'musl-gcc' : 'cc'
+      compiler = process.platform === 'linux' && binary.libc === 'musl' ? 'musl-gcc' : cc
       flags = ['-std=c11', '-O2', '-Wall', '-Wextra', '-Werror', '-fPIC', '-fvisibility=hidden', '-DNAPI_VERSION=8', '-I', headers]
       if (process.platform === 'darwin') {
         if (binary.libc !== undefined) throw new Error('build: macOS flock does not select a Linux libc')
@@ -78,7 +79,13 @@ for (const name of readdirSync(join(root, 'packages')).sort()) {
     try {
       const pending = join(temporary, basename(output))
       const result = spawnSync(compiler, [...flags, '-o', pending, join(root, source)], { stdio: 'inherit' })
-      if (result.error) throw result.error
+      if (result.error) {
+        const code = (result.error as NodeJS.ErrnoException).code
+        if (code === 'EACCES') {
+          throw new Error(`build: ${compiler} is not executable; install a C toolchain or set CC=<compiler> (e.g. CC=gcc)`)
+        }
+        throw result.error
+      }
       if (result.status !== 0) throw new Error(`build: ${compiler} failed for ${binary.path}`)
       // Readers never see a truncated addon when source checks build concurrently.
       renameSync(pending, output)

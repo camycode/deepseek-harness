@@ -18,6 +18,7 @@ import {
   type ConnectionConfig,
   type HostConnectionHandle,
   type PeerScope,
+  type Principal,
 } from '../src/index.ts'
 import { DEFAULT_MAX_REQUEST_BODY_BYTES } from '../src/http-bridge.ts'
 import { provideBrowserCredentials } from './browser-credentials.ts'
@@ -207,6 +208,38 @@ describe('connection node half', () => {
     } finally {
       await fiber.dispose()
     }
+  })
+
+  it('resolves admission through registered peer resolvers, in order, and restores native behavior', async () => {
+    const { connection, dispose } = await mounted()
+    try {
+      const cookie = browserCookie(connection, 'localhost')
+      const guestPrincipal = { kind: 'test-guest', guest: 'resolver' } as unknown as Principal
+      const guest = connection.createPeer({ principal: guestPrincipal, answerWaterfalls: true })
+      expect(guest.answerWaterfalls).toBe(true)
+      const plain = connection.createPeer({ principal: guestPrincipal })
+      expect(plain.answerWaterfalls).toBe(false)
+
+      const seen: boolean[] = []
+      const removeFirst = connection.registerPeerResolver((_request, context) => {
+        seen.push(context.browser)
+        return undefined
+      })
+      const removeSecond = connection.registerPeerResolver((_request, context) =>
+        context.browser ? { peer: guest } : undefined)
+      expect(connection.admit(fakeRequest({ host: 'localhost', cookie }))).toEqual({ peer: guest })
+      expect(connection.admit(fakeRequest({ host: 'localhost' }))).toEqual({ rejection: 401 })
+      expect(seen).toEqual([true, false])
+
+      removeSecond()
+      expect(connection.admit(fakeRequest({ host: 'localhost', cookie }))).toEqual({ peer: connection.browserPeer })
+
+      const removeRejection = connection.registerPeerResolver(() => ({ rejection: 401 }))
+      expect(connection.admit(fakeRequest({ host: 'localhost', cookie }))).toEqual({ rejection: 401 })
+      removeRejection()
+      removeFirst()
+      expect(connection.admit(fakeRequest({ host: 'localhost', cookie }))).toEqual({ peer: connection.browserPeer })
+    } finally { await dispose() }
   })
 
   it('accepts the bind address of a web carrier attached after Connection', async () => {

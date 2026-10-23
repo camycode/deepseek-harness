@@ -476,6 +476,12 @@ export interface PeerScope {
   /** Whether the Peer may open a forwarded-event stream; this does not grant business permissions. */
   readonly interactions: 'answer' | 'none'
   /**
+   * Whether this non-owner Peer may answer forwarded waterfalls (approval,
+   * questions). Omitted means false; the owner always answers. Opting in does
+   * not grant business permissions: every delivery still passes `decide()`.
+   */
+  readonly answerWaterfalls?: boolean
+  /**
    * Tear down every registration made through `ctx`.
    * @returns settles once the scope has quiesced; racing calls share one completion.
    */

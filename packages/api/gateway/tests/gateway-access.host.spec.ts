@@ -23,6 +23,7 @@ import {
   type TypertResource,
 } from '@deepseek-ai/dsh-typert-protocol'
 import TypertRegistry from '@deepseek-ai/dsh-typert-registry'
+import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import { z } from 'zod'
 import TypertGatewayService, { type TypertRemoteEventDispatch } from '@deepseek-ai/dsh-api-gateway'
 import { callResources, eventResources } from '../src/access.ts'
@@ -48,6 +49,8 @@ declare module '@deepseek-ai/dsh-typert-protocol' {
     /** Test-only resource kinds; the Gateway itself names no kind. */
     'test-shelf': TypertResource<string>
     'test-desk': TypertResource<string>
+    /** Runtime kind registered by the Session Controller; used by delegated waterfall tests. */
+    session: TypertResource<SessionId>
   }
 }
 
@@ -58,11 +61,12 @@ const GUEST: Guest = { kind: 'test-guest', guest: 'gateway' }
 const GLOBAL = { kind: 'global' } as const
 const shelf = (id: string) => ({ kind: 'test-shelf', id }) as const
 const desk = (id: string) => ({ kind: 'test-desk', id }) as const
+const session = (id: string) => ({ kind: 'session', id: id as SessionId }) as const
 
 const FIXTURE_ACTIONS: readonly RemoteAccessAction[] = [
   'accessFixture/open', 'accessFixture/read', 'accessFixture/byAgent', 'accessFixture/byLookup',
   'accessFixture/byLookupAndOption', 'accessFixture/byList', 'accessFixture/scoped', 'accessFixture/scopedOnDesk',
-  'accessFixture/scopedByReader', 'accessFixture/annotate', 'absentAccess/read', 'event:fixture/notice', 'event:fixture/shelf',
+  'accessFixture/scopedByReader', 'accessFixture/annotate', 'absentAccess/read', 'event:fixture/notice', 'event:fixture/shelf', 'event:fixture/ask',
 ]
 
 function role<K extends RemoteAccessResourceKind>(resource: K): RemoteAccessRole<K> {
@@ -78,6 +82,8 @@ function on(resource: RemoteAccessResource): RemoteAccessBinding {
       return { role: role('test-shelf'), resource }
     case 'test-desk':
       return { role: role('test-desk'), resource }
+    case 'session':
+      return { role: role('session'), resource }
     default:
       throw new Error('no fixture role for this resource kind')
   }
@@ -747,6 +753,50 @@ describe('Gateway forwarded events for non-owner Peers', () => {
     abort.abort()
     await guestEvents.return?.()
     await ownerEvents.return?.()
+  })
+
+  it('delivers an admitted waterfall to a delegated non-owner and accepts its result', async () => {
+    const { ctx, hold } = await setup({ connection: true })
+    hold(session('agent-1'))
+    const push = eventSource(ctx)
+    const guest = ctx.connection.createPeer({ principal: GUEST, answerWaterfalls: true })
+    const abort = new AbortController()
+    const events = (await ctx.typertGateway.wireStream.open(
+      '$events', { args: {} }, (async function* () {})(), guest, abort.signal,
+    ))[Symbol.asyncIterator]()
+    const ready = await events.next()
+    expect(ready.value).toMatchObject({ type: 'ready', host: { home: '/fixture' } })
+    // A delegated answer stream still does not count as the owner's inspect page.
+    expect(ctx.typertGateway.hasLiveClient()).toBe(false)
+
+    const settled = vi.fn()
+    const subject = {}
+    push({
+      event: 'fixture/ask',
+      request: { question: 'q', agent: subject },
+      context: { value: ctx.extend({}), subject, agentId: 'agent-1' },
+      resolve: settled,
+      reject: settled,
+    })
+    const frame = await events.next()
+    expect(frame.value).toMatchObject({ type: 'waterfall', event: 'fixture/ask' })
+    const clientId: unknown = Reflect.get(ready.value as object, 'clientId')
+    const eventId: unknown = Reflect.get(frame.value as object, 'eventId')
+    const shared = ctx.connection.createSharedFetchHandler('/api')
+    const accepted = await shared.fetch(new Request('http://host/api/$events/result', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        type: 'client-request',
+        rpcId: 'rpc-delegated',
+        method: '$events/result',
+        payload: { args: { clientId, eventId, outcome: { kind: 'result', value: { ok: true } } } },
+      }),
+    }), guest)
+    expect(await accepted.json()).toMatchObject({ result: { ok: true } })
+    expect(settled).toHaveBeenCalledWith({ kind: 'result', value: { ok: true } })
+    abort.abort()
+    await events.return?.()
   })
 
   it('delivers a global event that a global role lists, and drops one whose resource is missing without asking remoteAccess', async () => {
