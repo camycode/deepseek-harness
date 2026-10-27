@@ -20,6 +20,36 @@ function scheduleEvent(data: unknown, seq: number): SessionEvent {
 }
 
 describe('shared Schedule management', () => {
+  it('shows and mutates only sessions admitted by the caller policy', async () => {
+    const allowed = SessionId('allowed')
+    const hidden = SessionId('hidden')
+    const test = await harness({
+      onContext: (ctx) => {
+        ctx.provide('remoteAccess', {
+          allows: (resource: { kind: string; id: string }) => resource.id === allowed,
+        } as never)
+      },
+    })
+    tests.push(test)
+    const { service } = test
+    const allowedTask = await service.create(allowed, {
+      prompt: 'allowed', after_seconds: 60, title: 'Allowed',
+    })
+    const hiddenTask = await service.create(hidden, {
+      prompt: 'hidden', after_seconds: 60, title: 'Hidden',
+    })
+
+    expect((await service.catalog()).map(entry => entry.title)).toEqual(['Allowed'])
+    expect(await service.list({ sessionId: hidden })).toEqual([])
+    expect(await service.history({ sessionId: hidden, id: hiddenTask.id, limit: 10 }))
+      .toEqual({ id: hiddenTask.id, code: 'schedule_not_found' })
+    expect(await service.delete({ sessionId: hidden, id: hiddenTask.id }))
+      .toEqual({ id: hiddenTask.id, deleted: false, code: 'schedule_not_found' })
+    expect(await service.update({ sessionId: hidden, id: hiddenTask.id, expected: hiddenTask }))
+      .toEqual({ id: hiddenTask.id, updated: false, code: 'schedule_not_found' })
+    expect((await service.catalog()).map(entry => entry.id)).toEqual([allowedTask.id])
+  })
+
   it('initializes a new task with empty known delivery history', async () => {
     const { service, pool } = await setup()
     const sessionId = SessionId('new-history')

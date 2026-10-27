@@ -269,6 +269,7 @@ export class ScheduleService extends TypertRemoteService {
    */
   @Remote('list')
   async list(request: ScheduleListRequest): Promise<ScheduleRecord[]> {
+    if (!this.sessionAllowed(request.sessionId)) return []
     const domain = await this.getDomain()
     return [...domain.table('tasks').entries()]
       .filter(([, task]) => task.sessionId === request.sessionId && task.status === 'active')
@@ -285,6 +286,7 @@ export class ScheduleService extends TypertRemoteService {
   async catalog(): Promise<ScheduleCatalogEntry[]> {
     const domain = await this.getDomain()
     return [...domain.table('tasks').entries()]
+      .filter(([, task]) => this.sessionAllowed(task.sessionId))
       .map(([, task]) => ({
         ...task.record, sessionId: task.sessionId, status: task.status,
         ...(task.lastDelivery === undefined ? {} : { lastDelivery: task.lastDelivery }),
@@ -305,7 +307,7 @@ export class ScheduleService extends TypertRemoteService {
       throw new ScheduleInputError('invalid_rule', 'Delivery history limit must be a safe integer from 1 through 100.')
     }
     const task = (await this.getDomain()).table('tasks').get(request.id)
-    if (task === undefined || task.sessionId !== request.sessionId) {
+    if (!this.sessionAllowed(request.sessionId) || task === undefined || task.sessionId !== request.sessionId) {
       return { id: request.id, code: 'schedule_not_found' }
     }
     return deliveryHistoryPage(task, request, this.retention)
@@ -328,7 +330,7 @@ export class ScheduleService extends TypertRemoteService {
       const tasks = (await this.getDomain()).table('tasks')
       signal?.throwIfAborted()
       const current = tasks.get(request.id)
-      if (current === undefined || current.sessionId !== request.sessionId) {
+      if (!this.sessionAllowed(request.sessionId) || current === undefined || current.sessionId !== request.sessionId) {
         return { id: request.id, deleted: false, code: 'schedule_not_found' }
       }
       await tasks.delete(request.id)
@@ -355,6 +357,9 @@ export class ScheduleService extends TypertRemoteService {
   @Remote('update')
   async update(request: ScheduleUpdateRequest, signal?: AbortSignal): Promise<ScheduleUpdateResult> {
     return this.serialize<ScheduleUpdateResult>(async () => {
+      if (!this.sessionAllowed(request.sessionId)) {
+        return { id: request.id, updated: false, code: 'schedule_not_found' }
+      }
       const refusal = this.reminderTargetRefusal(request.sessionId)
       if (refusal !== undefined) return refusal
       const tasks = (await this.getDomain()).table('tasks')
@@ -387,6 +392,28 @@ export class ScheduleService extends TypertRemoteService {
       // listeners inline and nothing else runs in the try. The event is a
       // notification, not a transaction participant.
       this.ctx.logger.warn(`schedule: schedule/changed listener failed: ${String(error)}`)
+    }
+  }
+
+  /**
+   * Whether the caller's remote-access policy admits this Session. The service
+   * is structural so this package gains no dependency and standalone hosts
+   * without remote access keep the owner behavior.
+   * @param sessionId - Session a task is bound to.
+   * @returns true for the owner, an admitted non-owner, or a host without policies.
+   */
+  private sessionAllowed(sessionId: SessionId): boolean {
+    // Read at Remote-call time: the traceable service view must carry this
+    // Context's invocation so allows() sees the caller principal. Capturing it
+    // at construction binds the injection context, where invocation is absent.
+    const access = this.ctx.get('remoteAccess') as
+      | { allows(resource: { kind: 'session'; id: SessionId }): boolean }
+      | undefined
+    if (access === undefined) return true
+    try {
+      return access.allows({ kind: 'session', id: sessionId })
+    } catch {
+      return false
     }
   }
 
