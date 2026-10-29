@@ -144,8 +144,9 @@ pnpm exec vitest run \
 路径的实现/测试在 `dsh-docker` 仓库；提取前已通过 18 个 Docker 测试与 244 个
 Docker+SSH 组合测试。
 
-当前环境无 Docker daemon，容器 create/start/exec、helper hello、bwrap/Landlock
-仍未 live 验证。
+Docker 侧已在 `dsh-docker` 完成 live 验证（Docker Desktop 27.3.1）：world ready、
+helper hello、fs 写读、subprocess、bwrap sandbox、PTC `run_code` 均通过。
+真实 dsh profile + Bash/gate 组合仍未验证。
 
 ---
 
