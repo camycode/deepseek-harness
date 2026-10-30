@@ -5,10 +5,13 @@ import { FileSystem, FsError } from '@deepseek-ai/dsh-fs'
 import type { FsDirEntry, FsEditOutcome, FsEditRequest, FsErrorCode, FsInfo, FsPathInfo, FsTarget, FsVersion, FsWriteIntent, FsWriteOutcome } from '@deepseek-ai/dsh-fs'
 import type { SandboxExecutionPolicy, SandboxMode } from '@deepseek-ai/dsh-sandbox'
 import type {} from '@deepseek-ai/dsh-sandbox-policy'
-import type {} from '@deepseek-ai/dsh-ssh'
 import { RemoteOperationError } from '@deepseek-ai/dsh-ssh/protocol'
 import { editResultSchema, entriesSchema, infoSchema, pathInfoSchema, targetSchema, textStreamIdSchema, writeResultSchema } from '@deepseek-ai/dsh-ssh/schemas'
 import { z } from 'zod'
+
+interface RemoteWorld {
+  request<T>(method: string, params: unknown, result: z.ZodType<T>, signal?: AbortSignal, wait?: boolean): Promise<T>
+}
 
 const errorCodes: Record<FsErrorCode, true> = {
   FS_NOT_FOUND: true, FS_NOT_DIRECTORY: true, FS_NOT_TEXT: true, FS_NOT_REGULAR_FILE: true,
@@ -18,7 +21,7 @@ const errorCodes: Record<FsErrorCode, true> = {
 
 /** Remote filesystem paired with the SSH subprocess and sandbox providers. */
 export class SshFileSystem extends FileSystem {
-  static inject = ['ssh', 'sandboxPolicy']
+  static inject = ['sandboxPolicy']
 
   override get sandboxMode(): SandboxMode { return this.ctx.sandboxPolicy.defaultMode }
 
@@ -94,8 +97,14 @@ export class SshFileSystem extends FileSystem {
     return await this.call('fs.edit', { target, edit, expected, policy }, editResultSchema, signal) as FsEditOutcome
   }
 
+  private world(): RemoteWorld {
+    const world = (this.ctx.get('remoteWorld' as never) ?? this.ctx.get('ssh')) as RemoteWorld | undefined
+    if (world === undefined) throw new Error('SSH filesystem requires ctx.remoteWorld or ctx.ssh')
+    return world
+  }
+
   private async call<T>(method: string, params: unknown, schema: z.ZodType<T>, signal?: AbortSignal): Promise<T> {
-    try { return await this.ctx.ssh.request(method, params, schema, signal) } catch (error) {
+    try { return await this.world().request(method, params, schema, signal) } catch (error) {
       if (error instanceof RemoteOperationError && error.code !== undefined && Object.hasOwn(errorCodes, error.code)) {
         throw new FsError(error.message, error.code as FsErrorCode, { cause: error })
       }
