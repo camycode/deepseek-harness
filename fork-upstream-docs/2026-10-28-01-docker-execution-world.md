@@ -2,7 +2,7 @@
 
 > 日期：**2026-10-28**
 > 开发分支：`feat/docker-execution-world`（base `master` / `9b4ad3f403`）
-> 状态：**仅 3 个源文件的最小增量，未合入 master。**
+> 状态：**仅 3 个源文件的最小增量；已合入 master（merge `ca3414084f`）。**
 > 关联：Docker 实现仓库 `/home/achen/code/dsh/dsh-docker`（`packages/docker-*`）；
 > 设计见其 `docs/DESIGN.md`（v0.4），实施记录见 `docs/IMPLEMENTATION.md`。
 > 目标：让 Docker 外部实现能复用 SSH 的 fs/subprocess/sandbox provider，
@@ -36,7 +36,7 @@
 
 ```text
 3 source files
-+228 / -13（含 188 行本文档；代码约 40 行）
++229 / -13（含 189 行本文档；代码约 40 行）
 ```
 
 ---
